@@ -2,11 +2,17 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
   View, Text, StyleSheet, ScrollView, Image,
-  FlatList, Pressable, useWindowDimensions, Platform, Animated,
+  FlatList, Pressable, useWindowDimensions, Platform, Animated, Easing,
 } from "react-native";
 import { Accelerometer } from "expo-sensors";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import AsistenteIA from './AsistenteIA';
+
+/* Sesión 12: identificación de la versión para comparar antes/después.
+   v1-antes   -> Sensores arrancaba siempre en modo simulación.
+   v2-despues -> Sensores arranca en modo real en el dispositivo (en web sigue en simulación).
+   v3-sombra  -> v2 + la sombra de la carta 3D se dibuja dentro de la vista que gira (sin elevation). */
+const VERSION_APP = 'v3-sombra';
 
 const STORAGE_KEY = '@catalogo:favorito';
 
@@ -195,6 +201,8 @@ export default function App() {
     <View style={styles.container}>
       <Text style={styles.titulo}>Tienda de Cartas Pokémon</Text>
       <Text style={styles.subtitulo}>Original, Optimizada, Adaptativa y Sensores</Text>
+      {/* Sesión 12: versión visible para identificar qué build se está probando */}
+      <Text style={styles.versionApp}>Versión: {VERSION_APP}</Text>
 
       <View style={styles.pestanas}>
         <Pressable
@@ -297,17 +305,56 @@ function PantallaOriginal() {
 const NUM_COLUMNAS = 2;
 const ALTURA_TARJETA_GRID = 210; // imagen cuadrada + texto, por fila
 
+function useCardMotion(id, enabled = true) {
+  const movimiento = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+
+    const duracion = 1800 + (id % 5) * 220;
+    const animacion = Animated.loop(
+      Animated.sequence([
+        Animated.timing(movimiento, {
+          toValue: -4,
+          duration: duracion,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(movimiento, {
+          toValue: 4,
+          duration: duracion,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(movimiento, {
+          toValue: 0,
+          duration: duracion * 0.8,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    animacion.start();
+    return () => animacion.stop();
+  }, [enabled, id, movimiento]);
+
+  return movimiento;
+}
+
 /* Tarjeta memorizada en formato grid: imagen grande arriba, info compacta abajo */
 const TarjetaProductoGrid = React.memo(function TarjetaProductoGrid({ producto }) {
+  const movimiento = useCardMotion(producto.id);
+
   return (
-    <View style={styles.tarjetaGrid}>
+    <Animated.View style={[styles.tarjetaGrid, { transform: [{ translateY: movimiento }] }]}>
       <Image source={{ uri: producto.imagenUrl }} style={styles.imagenGrid} />
       <Text style={styles.nombreGrid} numberOfLines={1}>{producto.nombre}</Text>
       <View style={[styles.badgeTipo, { backgroundColor: producto.tipo.color }]}>
         <Text style={styles.textoBadge}>{producto.tipo.nombre}</Text>
       </View>
       <Text style={styles.precioGrid}>{producto.precio}</Text>
-    </View>
+    </Animated.View>
   );
 });
 
@@ -345,12 +392,15 @@ const TarjetaAdaptativa = React.memo(function TarjetaAdaptativa({
   seleccionada,
   onAlternarSeleccion,
 }) {
+  const movimiento = useCardMotion(producto.id);
+
   return (
-    <View
+    <Animated.View
       style={[
         styles.tarjetaAdaptativa,
         seleccionada && styles.tarjetaSeleccionada,
         esFavorito && styles.tarjetaFavorita,
+        { transform: [{ translateY: movimiento }] },
       ]}
     >
       <Image source={{ uri: producto.imagenUrl }} style={styles.imagen} />
@@ -384,7 +434,7 @@ const TarjetaAdaptativa = React.memo(function TarjetaAdaptativa({
         </Pressable>
       </View>
       <Text style={styles.precio}>{producto.precio}</Text>
-    </View>
+    </Animated.View>
   );
 });
 
@@ -588,21 +638,22 @@ function CartaInclinable({ carta, rotX, rotY }) {
     <View style={styles.escenario3D}>
       <Animated.View
         style={[
-          styles.carta3D,
-          {
-            borderColor: carta.tipo.color,
-            transform: [{ perspective: 800 }, { rotateX: giroX }, { rotateY: giroY }],
-          },
+          styles.contenedor3D,
+          { transform: [{ perspective: 800 }, { rotateX: giroX }, { rotateY: giroY }] },
         ]}
         accessible
         accessibilityLabel={`Carta ${carta.nombre} en 3D. Inclina el teléfono para moverla.`}
       >
-        <Image source={{ uri: carta.imagenUrl }} style={styles.imagenCarta3D} resizeMode="contain" />
-        <Text style={styles.nombreCarta3D}>{carta.nombre}</Text>
-        <View style={[styles.badgeTipo, { backgroundColor: carta.tipo.color }]}>
-          <Text style={styles.textoBadge}>{carta.tipo.nombre}</Text>
+        {/* Sombra dibujada dentro del contenedor que gira: se mueve junto con la carta */}
+        <View style={styles.sombraCarta3D} />
+        <View style={[styles.carta3D, { borderColor: carta.tipo.color }]}>
+          <Image source={{ uri: carta.imagenUrl }} style={styles.imagenCarta3D} resizeMode="contain" />
+          <Text style={styles.nombreCarta3D}>{carta.nombre}</Text>
+          <View style={[styles.badgeTipo, { backgroundColor: carta.tipo.color }]}>
+            <Text style={styles.textoBadge}>{carta.tipo.nombre}</Text>
+          </View>
+          <Text style={styles.precioCarta3D}>{carta.precio}</Text>
         </View>
-        <Text style={styles.precioCarta3D}>{carta.precio}</Text>
       </Animated.View>
     </View>
   );
@@ -610,10 +661,16 @@ function CartaInclinable({ carta, rotX, rotY }) {
 
 /* Pantalla Sensores: acelerómetro real o simulado */
 function PantallaSensores({ cartasSeleccionadas }) {
+  /* Sesión 12 (corrección del hallazgo A): en un dispositivo la pantalla arranca
+     directamente en modo real; solo en web arranca en simulación. Si el permiso se
+     niega o no hay sensor, el efecto de abajo lo avisa y ofrece "Cambiar a simulación". */
+  const esWeb = Platform.OS === "web";
   const [datos, setDatos] = useState({ x: 0, y: 0, z: 0 });
   const [simulados, setSimulados] = useState({ x: 0, y: 0, z: 1 });
-  const [modo, setModo] = useState("simulacion");
-  const [estado, setEstado] = useState("Simulación: sin sensor físico");
+  const [modo, setModo] = useState(esWeb ? "simulacion" : "real");
+  const [estado, setEstado] = useState(
+    esWeb ? "Simulación: sin sensor físico" : "Comprobando sensor y permiso..."
+  );
   const [base, setBase] = useState({ x: 0, y: 0 }); // posición neutra de la carta (calibración)
 
   useEffect(() => {
@@ -905,6 +962,11 @@ const styles = StyleSheet.create({
     color: '#8A7A63',
     marginTop: 4,
   },
+  versionApp: {
+    fontSize: 11,
+    color: '#8A7A63',
+    marginTop: 2,
+  },
   pestanas: {
     flexDirection: 'row',
     gap: 6,
@@ -1180,9 +1242,14 @@ const styles = StyleSheet.create({
   textoChip: { color: '#4A3B29', fontWeight: '600' },
   textoChipActivo: { color: 'white' },
   escenario3D: { alignItems: 'center', marginVertical: 12, paddingVertical: 12 },
+  contenedor3D: { width: 240 },
+  sombraCarta3D: {
+    position: 'absolute', top: 10, left: 6, right: -6, bottom: -10,
+    borderRadius: 18, backgroundColor: 'rgba(74,59,41,0.18)',
+  },
   carta3D: {
     width: 240, padding: 16, borderRadius: 18, borderWidth: 3,
-    backgroundColor: '#FBF7EE', alignItems: 'center', elevation: 6,
+    backgroundColor: '#FBF7EE', alignItems: 'center',
   },
   imagenCarta3D: { width: 190, height: 190 },
   nombreCarta3D: { fontSize: 18, fontWeight: 'bold', color: '#4A3B29', marginTop: 8 },
