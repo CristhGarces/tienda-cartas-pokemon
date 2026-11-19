@@ -49,4 +49,8 @@ Programación para Dispositivos Móviles II · UNIAJC · S841A · Grupo 4
 Ver la sección 8 del documento de entrega (responsables: Cristhian, Jhojan y Juan Camilo, tres cada uno).
 
 ## Entrega
+<<<<<<< HEAD
 Se conservan `package.json` y el archivo de bloqueo. Se excluyen `node_modules` y secretos. El QR de Expo no es un enlace permanente ni sustituye el código.
+=======
+Se conservan `package.json` y el archivo de bloqueo. Se excluyen `node_modules` y secretos. El QR de Expo no es un enlace permanente ni sustituye el código.
+>>>>>>> 5e9375c3f10d669e9d5a052bc13b8d7187babdcd
