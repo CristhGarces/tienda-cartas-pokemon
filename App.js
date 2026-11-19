@@ -9,10 +9,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import AsistenteIA from './AsistenteIA';
 
 /* Sesión 12: identificación de la versión para comparar antes/después.
-   v1-antes   -> Sensores arrancaba siempre en modo simulación.
-   v2-despues -> Sensores arranca en modo real en el dispositivo (en web sigue en simulación).
-   v3-sombra  -> v2 + la sombra de la carta 3D se dibuja dentro de la vista que gira (sin elevation). */
-const VERSION_APP = 'v3-sombra';
+   v1-antes    -> Sensores arrancaba siempre en modo simulación.
+   v2-despues  -> Sensores arranca en modo real en el dispositivo (en web sigue en simulación).
+   v3-sombra   -> v2 + la sombra de la carta 3D se dibuja dentro de la vista que gira (sin elevation).
+   v4-limpiar  -> v3 + botón "Limpiar favoritas" (Sesión 13) para restablecer los datos y repetir el recorrido. */
+const VERSION_APP = 'v4-limpiar';
 
 const STORAGE_KEY = '@catalogo:favorito';
 
@@ -197,6 +198,11 @@ export default function App() {
     );
   }
 
+  // Sesión 13: vacía la lista de favoritas (el useEffect de arriba guarda la lista vacía).
+  function limpiarSeleccion() {
+    setCartasSeleccionadas([]);
+  }
+
   return (
     <View style={styles.container}>
       <Text style={styles.titulo}>Tienda de Cartas Pokémon</Text>
@@ -256,6 +262,7 @@ export default function App() {
             <PantallaAdaptativa
               cartasSeleccionadas={cartasSeleccionadas}
               onAlternarSeleccion={alternarSeleccion}
+              onLimpiarSeleccion={limpiarSeleccion}
             />
           )}
           {pestana === 'sensores' && <PantallaSensores cartasSeleccionadas={cartasSeleccionadas} />}
@@ -470,7 +477,7 @@ function ImagenesFavoritas({ favoritos }) {
 }
 
 /* Pantalla Adaptativa: cambia columnas y reorganiza el resumen según el ancho disponible */
-function PantallaAdaptativa({ cartasSeleccionadas, onAlternarSeleccion }) {
+function PantallaAdaptativa({ cartasSeleccionadas, onAlternarSeleccion, onLimpiarSeleccion }) {
   const { width } = useWindowDimensions();
 
   const [favorito, setFavorito] = useState(null);
@@ -498,6 +505,17 @@ function PantallaAdaptativa({ cartasSeleccionadas, onAlternarSeleccion }) {
       setMensaje('No se pudo quitar la favorita. Intenta de nuevo.');
       setTipoMensaje('error');
     }
+  }
+
+  // Sesión 13: restablece todas las favoritas (selección y favorita guardada) para repetir el recorrido.
+  async function limpiarTodo() {
+    onLimpiarSeleccion();
+    if (favorito) {
+      await borrarLocalmente();
+      setFavorito(null);
+    }
+    setMensaje('Favoritas restablecidas. Puedes repetir el recorrido.');
+    setTipoMensaje('exito');
   }
 
   // Agrega o quita la carta y confirma la acción en el banner.
@@ -577,6 +595,19 @@ function PantallaAdaptativa({ cartasSeleccionadas, onAlternarSeleccion }) {
         </Text>
         {/* Muestro imagen y nombre de cada carta seleccionada o guardada. */}
         <ImagenesFavoritas favoritos={favoritosDelRecuadro} />
+        {/* Sesión 13: botón para restablecer los datos y repetir el recorrido. */}
+        {favoritosDelRecuadro.length > 0 && (
+          <Pressable
+            style={styles.botonFavorito}
+            onPress={limpiarTodo}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel="Limpiar favoritas"
+            accessibilityHint="Toca dos veces para quitar todas las cartas del recuadro de favoritas"
+          >
+            <Text style={styles.textoFavorito}>Limpiar favoritas</Text>
+          </Pressable>
+        )}
         {favorito && (
           /* Este botón quita la favorita que ya estaba guardada localmente. */
           <Pressable
