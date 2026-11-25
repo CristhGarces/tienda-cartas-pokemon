@@ -1,7 +1,7 @@
 /* Importaciones */
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, Image,
+  View, Text, StyleSheet, ScrollView, Image, TextInput, Alert,
   FlatList, Pressable, useWindowDimensions, Platform, Animated, Easing,
 } from "react-native";
 import { Accelerometer } from "expo-sensors";
@@ -12,8 +12,15 @@ import AsistenteIA from './AsistenteIA';
    v1-antes    -> Sensores arrancaba siempre en modo simulación.
    v2-despues  -> Sensores arranca en modo real en el dispositivo (en web sigue en simulación).
    v3-sombra   -> v2 + la sombra de la carta 3D se dibuja dentro de la vista que gira (sin elevation).
-   v4-limpiar  -> v3 + botón "Limpiar favoritas" (Sesión 13) para restablecer los datos y repetir el recorrido. */
-const VERSION_APP = 'v4-limpiar';
+   v4-limpiar  -> v3 + botón "Limpiar favoritas" (Sesión 13) para restablecer los datos y repetir el recorrido.
+   v5-final    -> v4 + precios estables, confirmación al limpiar, búsqueda, carrito simulado,
+                  banner compacto, mejor contraste, espacio inferior en Android y lector de pantalla.
+                  Se eliminan las pantallas Original y Optimizada: la app queda solo con
+                  Adaptativa, Sensores y Carrito. */
+const VERSION_APP = 'v5-final';
+
+/* Espacio extra al final de las listas para que la barra de navegación de Android no tape el último elemento */
+const ESPACIO_INFERIOR = Platform.OS === 'android' ? 72 : 24;
 
 const STORAGE_KEY = '@catalogo:favorito';
 
@@ -64,6 +71,34 @@ async function cargarLista() {
   }
 }
 
+/* Sesión 13 (mejora): confirmación que funciona en celular y en web.
+   En celular usa Alert.alert con botones; en web Alert.alert no muestra botones, así que usa window.confirm. */
+function confirmar(titulo, mensaje, textoAceptar, onAceptar, onCancelar) {
+  if (Platform.OS === 'web') {
+    const acepto = typeof window !== 'undefined' && window.confirm(`${titulo}\n\n${mensaje}`);
+    if (acepto) {
+      onAceptar();
+    } else if (onCancelar) {
+      onCancelar();
+    }
+    return;
+  }
+  Alert.alert(
+    titulo,
+    mensaje,
+    [
+      { text: 'Cancelar', style: 'cancel', onPress: onCancelar },
+      { text: textoAceptar, style: 'destructive', onPress: onAceptar },
+    ],
+    { cancelable: true, onDismiss: onCancelar }
+  );
+}
+
+/* Texto sin tildes y en minúsculas, para que la búsqueda no distinga "Eléctrico" de "electrico" */
+function normalizar(texto) {
+  return String(texto).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
 /* Datos base de Pokémon */
 const nombresPokemon = [
   'Pikachu', 'Charmander', 'Bulbasaur', 'Squirtle', 'Eevee', 'Snorlax',
@@ -97,17 +132,18 @@ const pokedexPorNombre = {
   Onix: 95,
 };
 
+/* Colores oscurecidos para que el texto blanco de las etiquetas se lea bien (contraste >= 4.5:1) */
 const tiposPokemon = [
-  { nombre: 'Fuego', color: '#E8703A' },
-  { nombre: 'Agua', color: '#4A90D9' },
-  { nombre: 'Planta', color: '#6FA84B' },
-  { nombre: 'Eléctrico', color: '#E0B23C' },
-  { nombre: 'Psíquico', color: '#C767A8' },
-  { nombre: 'Normal', color: '#A0977A' },
+  { nombre: 'Fuego', color: '#C2410C' },
+  { nombre: 'Agua', color: '#2F6DB5' },
+  { nombre: 'Planta', color: '#4B7F2E' },
+  { nombre: 'Eléctrico', color: '#8F6600' },
+  { nombre: 'Psíquico', color: '#A8458A' },
+  { nombre: 'Normal', color: '#6F6750' },
   { nombre: 'Fantasma', color: '#6C5B9E' },
-  { nombre: 'Dragón', color: '#5B6FCE' },
+  { nombre: 'Dragón', color: '#4A5BC0' },
   { nombre: 'Lucha', color: '#B5442E' },
-  { nombre: 'Roca', color: '#A69562' },
+  { nombre: 'Roca', color: '#7D6E3C' },
 ];
 
 /* Tipo principal real de cada Pokémon (según la Pokédex) */
@@ -146,24 +182,53 @@ const rangoPrecioPorRareza = {
   'Secreta': [450, 999],
 };
 
+/* Precio estable: el mismo id siempre produce el mismo precio, en cualquier dispositivo.
+   Math.imul usa enteros de 32 bits, así que el resultado no depende del motor de JS. */
+function fraccionDesdeId(id) {
+  return (Math.imul(id, 2654435761) >>> 0) / 4294967296; // número entre 0 y 1
+}
+
 /* Datos de prueba: 1000 cartas Pokémon */
 const productos = Array.from({ length: 1000 }, (_, index) => {
+  const id = index + 1;
   const nombreBase = nombresPokemon[index % nombresPokemon.length];
   const numeroPokedex = pokedexPorNombre[nombreBase];
   const tipo = tiposPokemon.find((t) => t.nombre === tipoPorNombre[nombreBase]);
   const rareza = rarezas[index % rarezas.length];
   const [precioMin, precioMax] = rangoPrecioPorRareza[rareza];
-  const precio = precioMin + Math.random() * (precioMax - precioMin);
+  const precioNum = Number(
+    (precioMin + fraccionDesdeId(id) * (precioMax - precioMin)).toFixed(2)
+  );
 
   return {
-    id: index + 1,
-    nombre: `${nombreBase} #${index + 1}`,
+    id,
+    nombre: `${nombreBase} #${id}`,
     descripcion: `Tipo ${tipo.nombre} · ${rareza}`,
-    precio: `$${precio.toFixed(2)}`,
+    precioNum,                          // número, para el carrito
+    precio: `$${precioNum.toFixed(2)}`, // texto, para mostrar
     tipo,
     imagenUrl: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${numeroPokedex}.png`,
   };
 });
+
+/* Carrito simulado: los precios se manejan en centavos para evitar errores de decimales al sumar */
+function calcularTotalCentavos(carrito) {
+  return Object.entries(carrito).reduce((suma, [id, cantidad]) => {
+    const carta = productos[Number(id) - 1];
+    return carta ? suma + Math.round(carta.precioNum * 100) * cantidad : suma;
+  }, 0);
+}
+
+function formatoCentavos(centavos) {
+  return `$${(centavos / 100).toFixed(2)}`;
+}
+
+/* Pestañas de la app */
+const PESTANAS = [
+  { id: 'adaptativa', etiqueta: 'Adaptativa' },
+  { id: 'sensores', etiqueta: 'Sensores' },
+  { id: 'carrito', etiqueta: 'Carrito' },
+];
 
 /* Componente Principal: App */
 export default function App() {
@@ -173,6 +238,9 @@ export default function App() {
   const [listaCargada, setListaCargada] = React.useState(false);
   // Sesión 10: muestra el asistente de IA local sin reemplazar las pestañas existentes.
   const [mostrarIA, setMostrarIA] = React.useState(false);
+  // Carrito simulado: { [idCarta]: cantidad }
+  const [carrito, setCarrito] = React.useState({});
+  const [mensajeCompra, setMensajeCompra] = React.useState('');
 
   // Recupera las favoritas guardadas al abrir la app.
   React.useEffect(() => {
@@ -203,41 +271,90 @@ export default function App() {
     setCartasSeleccionadas([]);
   }
 
+  /* Funciones del carrito */
+  function agregarAlCarrito(id) {
+    setCarrito((actual) => ({ ...actual, [id]: Math.min((actual[id] || 0) + 1, 99) }));
+    setMensajeCompra('');
+  }
+
+  function cambiarCantidad(id, delta) {
+    setCarrito((actual) => {
+      const nueva = (actual[id] || 0) + delta;
+      const siguiente = { ...actual };
+      if (nueva <= 0) {
+        delete siguiente[id];
+      } else {
+        siguiente[id] = Math.min(nueva, 99);
+      }
+      return siguiente;
+    });
+  }
+
+  function quitarDelCarrito(id) {
+    setCarrito((actual) => {
+      const siguiente = { ...actual };
+      delete siguiente[id];
+      return siguiente;
+    });
+  }
+
+  function vaciarCarrito() {
+    confirmar(
+      '¿Vaciar el carrito?',
+      'Se quitarán todas las cartas del carrito.',
+      'Vaciar',
+      () => {
+        setCarrito({});
+        setMensajeCompra('Carrito vaciado.');
+      }
+    );
+  }
+
+  const totalCentavos = calcularTotalCentavos(carrito);
+  const totalUnidades = Object.values(carrito).reduce((suma, cantidad) => suma + cantidad, 0);
+
+  function finalizarCompra() {
+    confirmar(
+      'Finalizar compra (simulada)',
+      `Total: ${formatoCentavos(totalCentavos)}. Es una compra con datos ficticios: no se realiza ningún cobro.`,
+      'Comprar',
+      () => {
+        setCarrito({});
+        setMensajeCompra(
+          `¡Compra simulada realizada por ${formatoCentavos(totalCentavos)}! No se hizo ningún cobro real.`
+        );
+      }
+    );
+  }
+
   return (
     <View style={styles.container}>
       <Text style={styles.titulo}>Tienda de Cartas Pokémon</Text>
-      <Text style={styles.subtitulo}>Original, Optimizada, Adaptativa y Sensores</Text>
+      <Text style={styles.subtitulo}>
+        Encuentra, colecciona y compra tus cartas favoritas
+      </Text>
       {/* Sesión 12: versión visible para identificar qué build se está probando */}
       <Text style={styles.versionApp}>Versión: {VERSION_APP}</Text>
 
       <View style={styles.pestanas}>
-        <Pressable
-          style={[styles.pestana, pestana === 'original' && styles.pestanaActiva]}
-          onPress={() => setPestana('original')}
-        >
-          <Text style={styles.textoPestana}>Original</Text>
-        </Pressable>
-
-        <Pressable
-          style={[styles.pestana, pestana === 'optimizada' && styles.pestanaActiva]}
-          onPress={() => setPestana('optimizada')}
-        >
-          <Text style={styles.textoPestana}>Optimizada</Text>
-        </Pressable>
-
-        <Pressable
-          style={[styles.pestana, pestana === 'adaptativa' && styles.pestanaActiva]}
-          onPress={() => setPestana('adaptativa')}
-        >
-          <Text style={styles.textoPestana}>Adaptativa</Text>
-        </Pressable>
-
-        <Pressable
-          style={[styles.pestana, pestana === 'sensores' && styles.pestanaActiva]}
-          onPress={() => setPestana('sensores')}
-        >
-          <Text style={styles.textoPestana}>Sensores</Text>
-        </Pressable>
+        {PESTANAS.map((p) => {
+          const activa = pestana === p.id;
+          const etiqueta = p.id === 'carrito' ? `Carrito (${totalUnidades})` : p.etiqueta;
+          return (
+            <Pressable
+              key={p.id}
+              style={[styles.pestana, activa && styles.pestanaActiva]}
+              onPress={() => setPestana(p.id)}
+              accessibilityRole="tab"
+              accessibilityLabel={etiqueta}
+              accessibilityState={{ selected: activa }}
+            >
+              <Text style={[styles.textoPestana, activa && styles.textoPestanaActiva]}>
+                {etiqueta}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
 
       {/* Sesión 10: botón para abrir o cerrar el asistente con IA local */}
@@ -256,61 +373,33 @@ export default function App() {
         <AsistenteIA productos={productos} />
       ) : (
         <>
-          {pestana === 'original' && <PantallaOriginal />}
-          {pestana === 'optimizada' && <PantallaOptimizada />}
           {pestana === 'adaptativa' && (
             <PantallaAdaptativa
               cartasSeleccionadas={cartasSeleccionadas}
               onAlternarSeleccion={alternarSeleccion}
               onLimpiarSeleccion={limpiarSeleccion}
+              carrito={carrito}
+              onAgregarAlCarrito={agregarAlCarrito}
             />
           )}
           {pestana === 'sensores' && <PantallaSensores cartasSeleccionadas={cartasSeleccionadas} />}
+          {pestana === 'carrito' && (
+            <PantallaCarrito
+              carrito={carrito}
+              totalCentavos={totalCentavos}
+              mensajeCompra={mensajeCompra}
+              onCambiarCantidad={cambiarCantidad}
+              onQuitar={quitarDelCarrito}
+              onVaciar={vaciarCarrito}
+              onComprar={finalizarCompra}
+              onIrAlCatalogo={() => setPestana('adaptativa')}
+            />
+          )}
         </>
       )}
     </View>
   );
 }
-
-/* Simula un cálculo pesado e innecesario en cada render */
-function calculoPesado(id) {
-  let resultado = 0;
-  for (let i = 0; i < 50000; i++) {
-    resultado += Math.sqrt(i) * id;
-  }
-  return resultado.toFixed(2);
-}
-
-/* Pantalla Original: ScrollView, sin virtualizar, con cálculo pesado repetido */
-function PantallaOriginal() {
-  console.log('Render PantallaOriginal');
-
-  return (
-    <ScrollView>
-      {productos.map((producto) => {
-        const pesoCalculado = calculoPesado(producto.id);
-
-        return (
-          <View key={producto.id} style={styles.tarjeta}>
-            <Image source={{ uri: producto.imagenUrl }} style={styles.imagen} />
-            <View style={styles.infoTarjeta}>
-              <Text style={styles.nombre}>{producto.nombre}</Text>
-              <View style={[styles.badgeTipo, { backgroundColor: producto.tipo.color }]}>
-                <Text style={styles.textoBadge}>{producto.tipo.nombre}</Text>
-              </View>
-              <Text style={styles.descripcion}>{producto.descripcion}</Text>
-              <Text style={{ fontSize: 9, color: '#a89a82' }}>calc: {pesoCalculado}</Text>
-            </View>
-            <Text style={styles.precio}>{producto.precio}</Text>
-          </View>
-        );
-      })}
-    </ScrollView>
-  );
-}
-
-const NUM_COLUMNAS = 2;
-const ALTURA_TARJETA_GRID = 210; // imagen cuadrada + texto, por fila
 
 function useCardMotion(id, enabled = true) {
   const movimiento = useRef(new Animated.Value(0)).current;
@@ -349,55 +438,14 @@ function useCardMotion(id, enabled = true) {
   return movimiento;
 }
 
-/* Tarjeta memorizada en formato grid: imagen grande arriba, info compacta abajo */
-const TarjetaProductoGrid = React.memo(function TarjetaProductoGrid({ producto }) {
-  const movimiento = useCardMotion(producto.id);
-
-  return (
-    <Animated.View style={[styles.tarjetaGrid, { transform: [{ translateY: movimiento }] }]}>
-      <Image source={{ uri: producto.imagenUrl }} style={styles.imagenGrid} />
-      <Text style={styles.nombreGrid} numberOfLines={1}>{producto.nombre}</Text>
-      <View style={[styles.badgeTipo, { backgroundColor: producto.tipo.color }]}>
-        <Text style={styles.textoBadge}>{producto.tipo.nombre}</Text>
-      </View>
-      <Text style={styles.precioGrid}>{producto.precio}</Text>
-    </Animated.View>
-  );
-});
-
-/* Pantalla Optimizada: FlatList virtualizado, grid de 2 columnas */
-function PantallaOptimizada() {
-  console.log('Render PantallaOptimizada');
-
-  return (
-    <FlatList
-      data={productos}
-      keyExtractor={(item) => item.id.toString()}
-      renderItem={({ item }) => <TarjetaProductoGrid producto={item} />}
-      numColumns={NUM_COLUMNAS}
-      columnWrapperStyle={styles.filaGrid}
-      initialNumToRender={8}
-      maxToRenderPerBatch={8}
-      windowSize={3}
-      removeClippedSubviews={true}
-      getItemLayout={(data, index) => {
-        const fila = Math.floor(index / NUM_COLUMNAS);
-        return {
-          length: ALTURA_TARJETA_GRID,
-          offset: ALTURA_TARJETA_GRID * fila,
-          index,
-        };
-      }}
-    />
-  );
-}
-
 /* Tarjeta para la pantalla Adaptativa */
 const TarjetaAdaptativa = React.memo(function TarjetaAdaptativa({
   producto,
   esFavorito,
   seleccionada,
+  cantidadEnCarrito,
   onAlternarSeleccion,
+  onAgregarAlCarrito,
 }) {
   const movimiento = useCardMotion(producto.id);
 
@@ -417,28 +465,49 @@ const TarjetaAdaptativa = React.memo(function TarjetaAdaptativa({
           <Text style={styles.textoBadge}>{producto.tipo.nombre}</Text>
         </View>
         <Text style={styles.descripcion}>{producto.descripcion}</Text>
-        {/* El botón de favorita ahora agrega o quita la carta del recuadro. */}
-        <Pressable
-          style={styles.botonFavorito}
-          onPress={() => onAlternarSeleccion(producto.id)}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          accessibilityRole="button"
-          accessibilityLabel={
-            seleccionada
-              ? `Quitar ${producto.nombre} de favoritas`
-              : `Marcar ${producto.nombre} como favorita`
-          }
-          accessibilityHint={
-            seleccionada
-              ? 'Toca dos veces para quitar esta carta del recuadro de favoritas'
-              : 'Toca dos veces para agregar esta carta al recuadro de favoritas'
-          }
-          accessibilityState={{ selected: seleccionada }}
-        >
-          <Text style={styles.textoFavorito}>
-            {seleccionada ? '★ Favorita · quitar' : '☆ Marcar como favorita'}
-          </Text>
-        </Pressable>
+        <View style={styles.filaBotonesTarjeta}>
+          {/* El botón de favorita ahora agrega o quita la carta del recuadro. */}
+          <Pressable
+            style={styles.botonFavorito}
+            onPress={() => onAlternarSeleccion(producto.id)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel={
+              seleccionada
+                ? `Quitar ${producto.nombre} de favoritas`
+                : `Marcar ${producto.nombre} como favorita`
+            }
+            accessibilityHint={
+              seleccionada
+                ? 'Toca dos veces para quitar esta carta del recuadro de favoritas'
+                : 'Toca dos veces para agregar esta carta al recuadro de favoritas'
+            }
+            accessibilityState={{ selected: seleccionada }}
+          >
+            <Text style={styles.textoFavorito}>
+              {seleccionada ? '★ Favorita · quitar' : '☆ Marcar como favorita'}
+            </Text>
+          </Pressable>
+          {/* Carrito simulado: agrega una unidad de esta carta. */}
+          <Pressable
+            style={[styles.botonFavorito, styles.botonCarrito]}
+            onPress={() => onAgregarAlCarrito(producto.id)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Agregar ${producto.nombre} al carrito`}
+            accessibilityHint={
+              cantidadEnCarrito > 0
+                ? `Ya tienes ${cantidadEnCarrito} en el carrito. Toca dos veces para agregar otra`
+                : 'Toca dos veces para agregar esta carta al carrito'
+            }
+          >
+            <Text style={styles.textoBotonCarrito}>
+              {cantidadEnCarrito > 0
+                ? `🛒 Agregar otra (${cantidadEnCarrito})`
+                : '🛒 Agregar al carrito'}
+            </Text>
+          </Pressable>
+        </View>
       </View>
       <Text style={styles.precio}>{producto.precio}</Text>
     </Animated.View>
@@ -446,7 +515,8 @@ const TarjetaAdaptativa = React.memo(function TarjetaAdaptativa({
 });
 
 /* Muestra las miniaturas y los nombres de las cartas que aparecen en el recuadro.
-  Recibe sus IDs y busca los datos completos en el catálogo. */
+  Recibe sus IDs y busca los datos completos en el catálogo.
+  Banner compacto: las miniaturas van en una sola fila con scroll horizontal. */
 function ImagenesFavoritas({ favoritos }) {
   // Busco imagen y nombre en el catálogo para cada carta del recuadro.
   const cartas = favoritos
@@ -456,7 +526,12 @@ function ImagenesFavoritas({ favoritos }) {
   if (cartas.length === 0) return null;
 
   return (
-    <View style={styles.filaImagenesFavoritas}>
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={styles.scrollImagenesFavoritas}
+      contentContainerStyle={styles.filaImagenesFavoritas}
+    >
       {cartas.map((carta) => (
         /* Agrupo imagen y nombre para identificar cada carta mostrada. */
         <View key={carta.id} style={styles.tarjetaImagenFavorita}>
@@ -472,17 +547,24 @@ function ImagenesFavoritas({ favoritos }) {
           </Text>
         </View>
       ))}
-    </View>
+    </ScrollView>
   );
 }
 
 /* Pantalla Adaptativa: cambia columnas y reorganiza el resumen según el ancho disponible */
-function PantallaAdaptativa({ cartasSeleccionadas, onAlternarSeleccion, onLimpiarSeleccion }) {
+function PantallaAdaptativa({
+  cartasSeleccionadas,
+  onAlternarSeleccion,
+  onLimpiarSeleccion,
+  carrito,
+  onAgregarAlCarrito,
+}) {
   const { width } = useWindowDimensions();
 
   const [favorito, setFavorito] = useState(null);
   const [mensaje, setMensaje] = useState('Pulsa "Marcar como favorita" para agregar o quitar cartas del recuadro.');
   const [tipoMensaje, setTipoMensaje] = useState('info');
+  const [busqueda, setBusqueda] = useState('');
 
   useEffect(() => {
     async function recuperar() {
@@ -494,6 +576,13 @@ function PantallaAdaptativa({ cartasSeleccionadas, onAlternarSeleccion, onLimpia
     }
     recuperar();
   }, []);
+
+  // Búsqueda por nombre (sin distinguir mayúsculas ni tildes).
+  const cartasFiltradas = useMemo(() => {
+    const consulta = normalizar(busqueda.trim());
+    if (!consulta) return productos;
+    return productos.filter((p) => normalizar(p.nombre).includes(consulta));
+  }, [busqueda]);
 
   async function quitarFavorita() {
     const ok = await borrarLocalmente();
@@ -508,7 +597,7 @@ function PantallaAdaptativa({ cartasSeleccionadas, onAlternarSeleccion, onLimpia
   }
 
   // Sesión 13: restablece todas las favoritas (selección y favorita guardada) para repetir el recorrido.
-  async function limpiarTodo() {
+  async function ejecutarLimpieza() {
     onLimpiarSeleccion();
     if (favorito) {
       await borrarLocalmente();
@@ -516,6 +605,20 @@ function PantallaAdaptativa({ cartasSeleccionadas, onAlternarSeleccion, onLimpia
     }
     setMensaje('Favoritas restablecidas. Puedes repetir el recorrido.');
     setTipoMensaje('exito');
+  }
+
+  // Pide confirmación antes de borrar: Cancelar conserva las favoritas.
+  function limpiarTodo() {
+    confirmar(
+      '¿Limpiar favoritas?',
+      `Se quitarán las ${favoritosDelRecuadro.length} cartas de tu recuadro de favoritas. Esta acción no se puede deshacer.`,
+      'Limpiar',
+      ejecutarLimpieza,
+      () => {
+        setMensaje('Cancelado. Tus favoritas se conservaron.');
+        setTipoMensaje('info');
+      }
+    );
   }
 
   // Agrega o quita la carta y confirma la acción en el banner.
@@ -528,6 +631,14 @@ function PantallaAdaptativa({ cartasSeleccionadas, onAlternarSeleccion, onLimpia
         ? `${carta.nombre} se quitó de tus favoritas`
         : `★ ${carta.nombre} se agregó a tus favoritas`
     );
+    setTipoMensaje('exito');
+  }
+
+  // Agrega la carta al carrito y lo confirma en el banner.
+  function agregarConMensaje(id) {
+    const carta = productos.find((p) => p.id === id);
+    onAgregarAlCarrito(id);
+    setMensaje(`🛒 ${carta.nombre} se agregó al carrito`);
     setTipoMensaje('exito');
   }
 
@@ -556,23 +667,25 @@ function PantallaAdaptativa({ cartasSeleccionadas, onAlternarSeleccion, onLimpia
     ? 'Tableta'
     : 'Teléfono';
 
+  const claveCarrito = Object.entries(carrito).join('|');
+
   return (
     <View style={styles.pantallaAdaptativa}>
       <View style={[styles.resumen, esDispositivoGrande && styles.resumenGrande]}>
-        <View style={styles.resumenItem}>
+        <View style={[styles.resumenItem, esDispositivoGrande && styles.resumenItemGrande]}>
           <Text style={styles.resumenLabel}>Cartas</Text>
           <Text style={styles.resumenValor}>{productos.length}</Text>
         </View>
-        <View style={styles.resumenItem}>
+        <View style={[styles.resumenItem, esDispositivoGrande && styles.resumenItemGrande]}>
           <Text style={styles.resumenLabel}>Dispositivo</Text>
           <Text style={styles.resumenValor}>{tipoDispositivo}</Text>
         </View>
-        <View style={styles.resumenItem}>
+        <View style={[styles.resumenItem, esDispositivoGrande && styles.resumenItemGrande]}>
           <Text style={styles.resumenLabel}>Columnas</Text>
           <Text style={styles.resumenValor}>{columnas}</Text>
         </View>
         {/* Muestro cuántas cartas hay en el recuadro de favoritas. */}
-        <View style={styles.resumenItem}>
+        <View style={[styles.resumenItem, esDispositivoGrande && styles.resumenItemGrande]}>
           <Text style={styles.resumenLabel}>Favoritas</Text>
           <Text style={styles.resumenValor}>{favoritosDelRecuadro.length}</Text>
         </View>
@@ -590,59 +703,230 @@ function PantallaAdaptativa({ cartasSeleccionadas, onAlternarSeleccion, onLimpia
         <Text style={styles.textoBanner}>
           Cartas favoritas ({favoritosDelRecuadro.length})
         </Text>
-        <Text style={[styles.mensajeBanner, tipoMensaje !== 'info' && styles.mensajeBannerFuerte]}>
+        {/* accessibilityLiveRegion: el lector de pantalla (TalkBack) anuncia cada mensaje nuevo. */}
+        <Text
+          style={[styles.mensajeBanner, tipoMensaje !== 'info' && styles.mensajeBannerFuerte]}
+          accessibilityLiveRegion="polite"
+        >
           {mensaje}
         </Text>
         {/* Muestro imagen y nombre de cada carta seleccionada o guardada. */}
         <ImagenesFavoritas favoritos={favoritosDelRecuadro} />
-        {/* Sesión 13: botón para restablecer los datos y repetir el recorrido. */}
-        {favoritosDelRecuadro.length > 0 && (
+        <View style={styles.filaBotonesBanner}>
+          {/* Sesión 13: botón para restablecer los datos y repetir el recorrido. */}
+          {favoritosDelRecuadro.length > 0 && (
+            <Pressable
+              style={styles.botonFavorito}
+              onPress={limpiarTodo}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Limpiar favoritas"
+              accessibilityHint="Toca dos veces para quitar todas las cartas del recuadro de favoritas. Se pedirá confirmación"
+            >
+              <Text style={styles.textoFavorito}>Limpiar favoritas</Text>
+            </Pressable>
+          )}
+          {favorito && (
+            /* Este botón quita la favorita que ya estaba guardada localmente. */
+            <Pressable
+              style={styles.botonFavorito}
+              onPress={quitarFavorita}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Quitar carta favorita"
+              accessibilityHint="Toca dos veces para eliminar tu carta favorita guardada"
+            >
+              <Text style={styles.textoFavorito}>Quitar favorita guardada</Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
+
+      {/* Búsqueda por nombre */}
+      <View style={styles.filaBusqueda}>
+        <TextInput
+          value={busqueda}
+          onChangeText={setBusqueda}
+          placeholder="Buscar carta por nombre (ej. Pikachu)"
+          placeholderTextColor="#6B5D49"
+          style={styles.entradaBusqueda}
+          accessibilityLabel="Buscar carta por nombre"
+          autoCorrect={false}
+          autoCapitalize="none"
+          returnKeyType="search"
+        />
+        {busqueda.length > 0 && (
           <Pressable
-            style={styles.botonFavorito}
-            onPress={limpiarTodo}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={styles.botonBorrarBusqueda}
+            onPress={() => setBusqueda('')}
             accessibilityRole="button"
-            accessibilityLabel="Limpiar favoritas"
-            accessibilityHint="Toca dos veces para quitar todas las cartas del recuadro de favoritas"
+            accessibilityLabel="Borrar búsqueda"
           >
-            <Text style={styles.textoFavorito}>Limpiar favoritas</Text>
-          </Pressable>
-        )}
-        {favorito && (
-          /* Este botón quita la favorita que ya estaba guardada localmente. */
-          <Pressable
-            style={styles.botonFavorito}
-            onPress={quitarFavorita}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            accessibilityRole="button"
-            accessibilityLabel="Quitar carta favorita"
-            accessibilityHint="Toca dos veces para eliminar tu carta favorita guardada"
-          >
-            <Text style={styles.textoFavorito}>Quitar favorita guardada</Text>
+            <Text style={styles.textoFavorito}>Borrar</Text>
           </Pressable>
         )}
       </View>
+      {busqueda.trim().length > 0 && cartasFiltradas.length > 0 && (
+        <Text style={styles.conteoBusqueda} accessibilityLiveRegion="polite">
+          {`Mostrando ${cartasFiltradas.length} de ${productos.length} cartas`}
+        </Text>
+      )}
 
-      {/* Incluí los IDs en extraData para que la lista actualice cada carta seleccionada. */}
+      {/* Incluí los IDs en extraData para que la lista actualice cada carta seleccionada o agregada al carrito. */}
       <FlatList
         key={`lista-${columnas}`}
-        data={productos}
+        data={cartasFiltradas}
         numColumns={columnas}
         keyExtractor={(item) => item.id.toString()}
         initialNumToRender={12}
-        extraData={`${favorito?.id}-${cartasSeleccionadas.join(',')}`}
+        keyboardShouldPersistTaps="handled"
+        extraData={`${favorito?.id}-${cartasSeleccionadas.join(',')}-${claveCarrito}`}
         renderItem={({ item }) => (
           <TarjetaAdaptativa
             producto={item}
             esFavorito={favorito?.id === item.id}
             seleccionada={cartasSeleccionadas.includes(item.id)}
+            cantidadEnCarrito={carrito[item.id] || 0}
             onAlternarSeleccion={alternarConMensaje}
+            onAgregarAlCarrito={agregarConMensaje}
           />
         )}
+        ListEmptyComponent={
+          <Text style={styles.sinResultados} accessibilityLiveRegion="polite">
+            {`No se encontraron cartas para "${busqueda.trim()}". Prueba con otro nombre, por ejemplo Pikachu o Eevee.`}
+          </Text>
+        }
         columnWrapperStyle={columnas > 1 ? styles.fila : undefined}
         contentContainerStyle={styles.listaContenido}
       />
     </View>
+  );
+}
+
+/* Pantalla Carrito: compra simulada con datos ficticios */
+function PantallaCarrito({
+  carrito,
+  totalCentavos,
+  mensajeCompra,
+  onCambiarCantidad,
+  onQuitar,
+  onVaciar,
+  onComprar,
+  onIrAlCatalogo,
+}) {
+  const ids = Object.keys(carrito).map(Number);
+
+  return (
+    <ScrollView style={styles.lista} contentContainerStyle={styles.panelCarrito}>
+      <Text style={styles.tituloSensor}>Mi carrito</Text>
+      <Text style={styles.avisoSensor}>
+        Compra simulada con datos ficticios: no se realiza ningún cobro.
+      </Text>
+
+      {mensajeCompra !== '' && (
+        <View style={[styles.bannerFavorito, styles.bannerExito]}>
+          <Text style={styles.mensajeBannerFuerte} accessibilityLiveRegion="polite">
+            {mensajeCompra}
+          </Text>
+        </View>
+      )}
+
+      {ids.length === 0 ? (
+        <View style={styles.carritoVacio}>
+          <Text style={styles.nombreSensor}>Tu carrito está vacío</Text>
+          <Text style={styles.avisoSensor}>
+            Agrega cartas desde la pestaña Adaptativa con el botón "Agregar al carrito".
+          </Text>
+          <Pressable
+            style={styles.botonPrimario}
+            onPress={onIrAlCatalogo}
+            accessibilityRole="button"
+            accessibilityLabel="Ir al catálogo"
+          >
+            <Text style={styles.textoBotonPrimario}>Ir al catálogo</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <>
+          {ids.map((id) => {
+            const carta = productos[id - 1];
+            const cantidad = carrito[id];
+            const subtotal = Math.round(carta.precioNum * 100) * cantidad;
+            return (
+              <View key={id} style={styles.tarjetaCarrito}>
+                <View style={styles.filaCarritoSuperior}>
+                  <Image source={{ uri: carta.imagenUrl }} style={styles.imagen} />
+                  <View style={styles.infoTarjeta}>
+                    <Text style={styles.nombre}>{carta.nombre}</Text>
+                    <View style={[styles.badgeTipo, { backgroundColor: carta.tipo.color }]}>
+                      <Text style={styles.textoBadge}>{carta.tipo.nombre}</Text>
+                    </View>
+                    <Text style={styles.descripcion}>Precio unitario: {carta.precio}</Text>
+                  </View>
+                </View>
+                <View style={styles.filaCantidad}>
+                  <Pressable
+                    style={styles.botonCantidad}
+                    onPress={() => onCambiarCantidad(id, -1)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Quitar una unidad de ${carta.nombre}`}
+                  >
+                    <Text style={styles.textoBotonCantidad}>−</Text>
+                  </Pressable>
+                  <Text
+                    style={styles.textoCantidad}
+                    accessibilityLabel={`Cantidad: ${cantidad}`}
+                  >
+                    {cantidad}
+                  </Text>
+                  <Pressable
+                    style={styles.botonCantidad}
+                    onPress={() => onCambiarCantidad(id, 1)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Agregar una unidad de ${carta.nombre}`}
+                  >
+                    <Text style={styles.textoBotonCantidad}>+</Text>
+                  </Pressable>
+                  <Text style={styles.subtotalCarrito}>{formatoCentavos(subtotal)}</Text>
+                  <Pressable
+                    style={styles.botonFavorito}
+                    onPress={() => onQuitar(id)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Quitar ${carta.nombre} del carrito`}
+                  >
+                    <Text style={styles.textoFavorito}>Quitar</Text>
+                  </Pressable>
+                </View>
+              </View>
+            );
+          })}
+
+          <View style={styles.resumenTotal}>
+            <Text style={styles.nombreSensor}>Total</Text>
+            <Text style={styles.totalCarrito} accessibilityLiveRegion="polite">
+              {formatoCentavos(totalCentavos)}
+            </Text>
+          </View>
+
+          <Pressable
+            style={styles.botonPrimario}
+            onPress={onComprar}
+            accessibilityRole="button"
+            accessibilityLabel="Finalizar compra simulada"
+          >
+            <Text style={styles.textoBotonPrimario}>Finalizar compra (simulada)</Text>
+          </Pressable>
+          <Pressable
+            style={styles.botonSecundario}
+            onPress={onVaciar}
+            accessibilityRole="button"
+            accessibilityLabel="Vaciar carrito"
+          >
+            <Text style={styles.textoFavorito}>Vaciar carrito</Text>
+          </Pressable>
+        </>
+      )}
+    </ScrollView>
   );
 }
 
@@ -990,18 +1274,18 @@ const styles = StyleSheet.create({
   },
   subtitulo: {
     fontSize: 14,
-    color: '#8A7A63',
+    color: '#6B5D49',
     marginTop: 4,
   },
   versionApp: {
     fontSize: 11,
-    color: '#8A7A63',
+    color: '#6B5D49',
     marginTop: 2,
   },
   pestanas: {
     flexDirection: 'row',
     gap: 6,
-    marginVertical: 20,
+    marginVertical: 14,
   },
   pestana: {
     flex: 1,
@@ -1014,10 +1298,14 @@ const styles = StyleSheet.create({
   pestanaActiva: {
     backgroundColor: '#6B4F35',
   },
+  /* Contraste: texto oscuro en pestañas inactivas, blanco solo sobre la pestaña activa */
   textoPestana: {
-    color: '#fff',
+    color: '#3B2E1E',
     fontWeight: 'bold',
     fontSize: 12,
+  },
+  textoPestanaActiva: {
+    color: '#fff',
   },
   botonIA: {
     alignSelf: 'flex-start',
@@ -1032,17 +1320,6 @@ const styles = StyleSheet.create({
   botonIAActivo: { backgroundColor: '#6B4F35' },
   textoBotonIA: { color: '#4A3B29', fontWeight: 'bold', fontSize: 13 },
   textoBotonIAActivo: { color: '#fff' },
-  tarjeta: {
-    height: 96,
-    marginTop: 12,
-    padding: 10,
-    backgroundColor: '#FBF7EE',
-    borderRadius: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E8DFC8',
-  },
   imagen: {
     width: 64,
     height: 64,
@@ -1060,7 +1337,7 @@ const styles = StyleSheet.create({
   },
   descripcion: {
     fontSize: 11,
-    color: '#8A7A63',
+    color: '#6B5D49',
     marginTop: 2,
   },
   badgeTipo: {
@@ -1080,39 +1357,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#6B4F35',
   },
-  filaGrid: {
-    justifyContent: 'space-between',
-    paddingHorizontal: 2,
-  },
-  tarjetaGrid: {
-    width: '48%',
-    marginTop: 12,
-    padding: 10,
-    backgroundColor: '#FBF7EE',
-    borderRadius: 14,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E8DFC8',
-  },
-  imagenGrid: {
-    width: '100%',
-    aspectRatio: 1,
-    borderRadius: 10,
-    backgroundColor: '#EADFC4',
-  },
-  nombreGrid: {
-    fontSize: 13,
-    fontWeight: 'bold',
-    color: '#4A3B29',
-    marginTop: 6,
-    textAlign: 'center',
-  },
-  precioGrid: {
-    fontSize: 12,
-    fontWeight: 'bold',
-    color: '#6B4F35',
-    marginTop: 4,
-  },
   pantallaAdaptativa: {
     flex: 1,
   },
@@ -1127,31 +1371,45 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E8DFC8',
   },
+  filaBotonesTarjeta: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    columnGap: 6,
+  },
   fila: {
     gap: 12,
   },
+  /* Espacio inferior: la barra de navegación de Android ya no tapa la última carta */
   listaContenido: {
-    paddingBottom: 20,
+    paddingBottom: ESPACIO_INFERIOR,
   },
+  /* Resumen compacto: en celular se muestra en cuadrícula de 2 x 2 */
   resumen: {
     backgroundColor: '#FBF7EE',
-    padding: 16,
+    padding: 12,
     borderRadius: 12,
-    marginBottom: 16,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: '#E8DFC8',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
   },
   resumenGrande: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexWrap: 'nowrap',
     alignItems: 'center',
   },
   resumenItem: {
-    marginBottom: 8,
+    width: '48%',
+    marginBottom: 6,
+  },
+  resumenItemGrande: {
+    width: 'auto',
+    marginBottom: 0,
   },
   resumenLabel: {
     fontSize: 12,
-    color: '#8A7A63',
+    color: '#6B5D49',
   },
   resumenValor: {
     fontSize: 16,
@@ -1159,12 +1417,116 @@ const styles = StyleSheet.create({
     color: '#5C4A32',
   },
 
+  /* Búsqueda */
+  filaBusqueda: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  entradaBusqueda: {
+    flex: 1,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: '#6B5D49',
+    borderRadius: 10,
+    backgroundColor: '#FBF7EE',
+    color: '#4A3B29',
+  },
+  botonBorrarBusqueda: {
+    marginLeft: 8,
+    paddingHorizontal: 14,
+    minHeight: 44,
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: '#E8DFC8',
+  },
+  conteoBusqueda: { fontSize: 12, color: '#6B5D49', marginBottom: 4 },
+  sinResultados: {
+    padding: 16,
+    fontSize: 14,
+    color: '#4A3B29',
+    textAlign: 'center',
+  },
+
+  /* Carrito */
+  panelCarrito: {
+    paddingBottom: ESPACIO_INFERIOR + 20,
+  },
+  carritoVacio: {
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: '#FBF7EE',
+    borderWidth: 1,
+    borderColor: '#E8DFC8',
+  },
+  tarjetaCarrito: {
+    marginTop: 10,
+    padding: 10,
+    backgroundColor: '#FBF7EE',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E8DFC8',
+  },
+  filaCarritoSuperior: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  filaCantidad: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    marginTop: 8,
+    columnGap: 8,
+  },
+  botonCantidad: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: '#D8CBB0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  textoBotonCantidad: { fontSize: 22, fontWeight: 'bold', color: '#3B2E1E' },
+  textoCantidad: { minWidth: 28, textAlign: 'center', fontSize: 16, fontWeight: 'bold', color: '#4A3B29' },
+  subtotalCarrito: { flex: 1, textAlign: 'right', fontSize: 15, fontWeight: 'bold', color: '#6B4F35' },
+  resumenTotal: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: '#E8DFC8',
+  },
+  totalCarrito: { fontSize: 22, fontWeight: 'bold', color: '#4A3B29' },
+  botonPrimario: {
+    marginTop: 12,
+    minHeight: 48,
+    paddingHorizontal: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 10,
+    backgroundColor: '#6B4F35',
+  },
+  textoBotonPrimario: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
+  botonSecundario: {
+    marginTop: 8,
+    minHeight: 44,
+    paddingHorizontal: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 10,
+    backgroundColor: '#E8DFC8',
+  },
+
   /* Estilos de la pestaña Sensores */
   lista: {
     flex: 1,
   },
   panelSensor: {
-    paddingBottom: 32,
+    paddingBottom: ESPACIO_INFERIOR + 20,
   },
   tituloSensor: {
     fontSize: 18,
@@ -1175,7 +1537,7 @@ const styles = StyleSheet.create({
   avisoSensor: {
     marginVertical: 8,
     fontSize: 13,
-    color: '#8A7A63',
+    color: '#6B5D49',
   },
   textoSensor: {
     color: '#4A3B29',
@@ -1259,7 +1621,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: '#E8DFC8',
   },
-  guiaPlanoOk: { backgroundColor: '#6FA84B' },
+  guiaPlanoOk: { backgroundColor: '#4B7F2E' },
   textoGuia: { color: '#4A3B29', fontWeight: '600' },
   textoGuiaOk: { color: 'white' },
 
@@ -1287,27 +1649,32 @@ const styles = StyleSheet.create({
   precioCarta3D: { fontSize: 16, fontWeight: 'bold', color: '#6B4F35', marginTop: 8 },
 
   tarjetaFavorita: { borderColor: '#6B4F35', borderWidth: 2 },
-  tarjetaSeleccionada: { backgroundColor: '#EFF7FC', borderColor: '#4A90D9', borderWidth: 2 },
+  tarjetaSeleccionada: { backgroundColor: '#EFF7FC', borderColor: '#2F6DB5', borderWidth: 2 },
   botonFavorito: {
     alignSelf: 'flex-start', marginTop: 6, paddingVertical: 10,
     paddingHorizontal: 14, minHeight: 44, justifyContent: 'center',
     borderRadius: 8, backgroundColor: '#E8DFC8',
   },
+  botonCarrito: { backgroundColor: '#6B4F35' },
+  textoBotonCarrito: { fontSize: 13, fontWeight: 'bold', color: '#fff' },
   textoFavorito: { fontSize: 13, fontWeight: 'bold', color: '#4A3B29' },
-  bannerExito: { backgroundColor: '#E3F0D8', borderColor: '#6FA84B', borderWidth: 2 },
+  bannerExito: { backgroundColor: '#E3F0D8', borderColor: '#4B7F2E', borderWidth: 2 },
   bannerError: { backgroundColor: '#F8DDD6', borderColor: '#B5442E', borderWidth: 2 },
   mensajeBannerFuerte: { fontSize: 14, color: '#4A3B29', fontWeight: 'bold' },
-  /* Estilos para acomodar la miniatura y el nombre de cada carta del recuadro. */
-  filaImagenesFavoritas: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 10 },
-  tarjetaImagenFavorita: { width: 108, alignItems: 'center', marginRight: 8, marginBottom: 8 },
+
+  /* Banner compacto: miniaturas en una sola fila con scroll horizontal */
+  scrollImagenesFavoritas: { marginTop: 8, flexGrow: 0 },
+  filaImagenesFavoritas: { flexDirection: 'row', alignItems: 'flex-start' },
+  tarjetaImagenFavorita: { width: 84, alignItems: 'center', marginRight: 8 },
   imagenFavorita: {
-    width: 72, height: 72, borderRadius: 12, backgroundColor: '#EFE6D2',
+    width: 56, height: 56, borderRadius: 12, backgroundColor: '#EFE6D2',
   },
-  nombreImagenFavorita: { width: 104, marginTop: 3, textAlign: 'center', fontSize: 11, color: '#5C4A32' },
+  nombreImagenFavorita: { width: 80, marginTop: 3, textAlign: 'center', fontSize: 11, color: '#5C4A32' },
+  filaBotonesBanner: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 8 },
   bannerFavorito: {
     backgroundColor: '#FBF7EE', padding: 12, borderRadius: 12,
-    marginBottom: 12, borderWidth: 1, borderColor: '#E8DFC8',
+    marginBottom: 10, borderWidth: 1, borderColor: '#E8DFC8',
   },
   textoBanner: { fontSize: 14, fontWeight: 'bold', color: '#5C4A32' },
-  mensajeBanner: { fontSize: 12, color: '#8A7A63', marginTop: 2 },
+  mensajeBanner: { fontSize: 12, color: '#6B5D49', marginTop: 2 },
 });
